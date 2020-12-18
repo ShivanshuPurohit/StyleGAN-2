@@ -460,3 +460,4 @@ class StyleGAN(object):
     	self.GAN.SE = self.loadModel("styMA", num)
     	self.GAN.GenModel()
     	self.GAN.GenModel1A()
+        
