@@ -1,6 +1,8 @@
 # StyleGAN-2
 
-Tensorflow implementation of [StyleGAN-v2](https://arxiv.org/abs/1912.04958). Implemented initially on CIFAR-10, with bigger datasets for future work.
+Tensorflow implementation of [StyleGAN-v2](https://arxiv.org/abs/1912.04958). 
+### WIP
+Implemented initially on CIFAR-10, with bigger datasets for future work.
 
 ### Citation 
 ```
