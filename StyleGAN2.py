@@ -70,7 +70,7 @@ def crop_to_fit(x):
 
 def upsample(x):
 	return K.resize_immages(x, 2, 2, "channels_last", interpolation='bilinear')
-	
+
 
 def upsample_to size(x):
 	y = im_size / x.shape[2]
@@ -251,7 +251,7 @@ class GAN(object):
     	self.GE.set_weights(self.G.get_weights())
     	self.SE.set_weights(self.S.get_weights())
 
-	
+
 class StyleGAN(object):
 	def __init__(self, steps=1, lr=1e-3, decay=1e-4, silent=True):
 		#init gan and eval models
@@ -460,4 +460,3 @@ class StyleGAN(object):
     	self.GAN.SE = self.loadModel("styMA", num)
     	self.GAN.GenModel()
     	self.GAN.GenModel1A()
-        
