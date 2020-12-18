@@ -250,3 +250,213 @@ class GAN(object):
     def MAinit(self):
     	self.GE.set_weights(self.G.get_weights())
     	self.SE.set_weights(self.S.get_weights())
+
+	
+class StyleGAN(object):
+	def __init__(self, steps=1, lr=1e-3, decay=1e-4, silent=True):
+		#init gan and eval models
+		self.GAN = GAN(steps=steps, lr=lr, decay=decay)
+		self.GAN.GenModel()
+		self.GAN.GenModel1A()
+		self.GAN.G.summary()
+
+		#data generator
+		self.im = dataGenerator(directory, im_size, flip=True)
+		self.lastblip = time.clock()
+		self.silent = silent
+		self.ones = np.ones((batch_size, 1), dtype=np.float32)
+		self.zeros = np.zeros((batch_size, 1), dtype=np.float32)
+		self.nones = -self.ones
+		self.pl_mean = 0
+		self.av = np.zeros([44])
+
+	def train(self):
+		if random() < mixed_prob:
+			style = mixedList(batch_size)
+		else:
+			style = noiseList(batch_size)
+
+		#apply gradient penalty
+		apply_gradient_penalty = self.GAN.steps % 2 == 0 or self.GAN.steps < 10000
+		apply_path_penalty = self.GAN.steps % 16 == 0
+		a, b, c, d = self.train_step(self.im.get_batch(batch_size).astype('float32'), style, nImage(batch_size), apply_gradient_penalty, apply_path_penalty)
+
+		if self.pl_mean == 0:
+			self.pl_mean = np.mean(d)
+		self.pl_mean = 0.99 * self.pl_mean + 0.01 * np.mean(d)
+		if self.GAN.steps % 10 == 0 and self.GAN.steps > 20000:
+			self.GAN.EMA()
+		if self.GAN.steps <= 25000 and self.GAN.steps % 1000 == 2:
+			self.GAN.MAinit()
+		if np.isnan(a):
+			print('NaN value error')
+			exit()
+
+		if self.GAN.steps % 100 == 0 and not self.silent:
+			print('\n\nRound'+str(self.GAN.steps)+":")
+			print("Discriminator:", np.array(a))
+			print("Generator:", np.array(b))
+			print('Path length:', self.pl_mean)
+			s = round((time.clock()-self.lastblip), 4)
+			self.lastblip = time.clock()
+			steps_per_second = 100 / s
+            steps_per_minute = steps_per_second * 60
+            steps_per_hour = steps_per_minute * 60
+            print("Steps/Second: " + str(round(steps_per_second, 2)))
+            print("Steps/Hour: " + str(round(steps_per_hour)))
+
+            min1k = floor(1000/steps_per_minute)
+            sec1k = floor(1000/steps_per_second) % 60
+            print("1k Steps: " + str(min1k) + ":" + str(sec1k))
+            steps_left = 200000 - self.GAN.steps + 1e-7
+            hours_left = steps_left // steps_per_hour
+            minutes_left = (steps_left // steps_per_minute) % 60
+
+            print("Til Completion: " + str(int(hours_left)) + "h" + str(int(minutes_left)) + "m")
+            print()
+            if self.GAN.steps % 500 == 0:
+            	self.save(floor(self.GAN.steps/10000))
+            if self.GAN.steps % 1000 == 0 or (self.GAN.steps % 500 == 0 and self.GAN.steps < 2500):
+            	self.evaluate(floor(self.GAN.steps/1000))
+
+        printProgressBar(self.GAN.steps % 100, 99, decimals=0)
+        self.GAN.steps += 1
+
+    @tf.function
+    def train_step(self, images, style, noise, perform_gp=True, perform_pl=False):
+        with tf.GradientTape() as gen_tape, tf.GradientTape() as disc_tape:
+    		w_space = []
+        	pl_lengths = self.pl_mean
+        	for i in range(len(style)):
+        		w_space.append(self.GAN.S(style[i]))
+
+        	#generate images
+        	generated_images = self.GAN.G(w_space + [noise])
+
+        	#compare
+        	real_output = self.GAN.D(images, training=True)
+        	fake_output = self.GAN.D(generated_images, training=True)
+
+        	#hinge loss
+        	gen_loss = K.mean(fake_output)
+        	divergence = K.mean(K.relu(1+real_output)+K.relu(1-fake_output))
+        	disc_loss = divergence
+
+        	if perform_gp:
+        		disc_loss += gradient_penalty(images, real_output, 10)
+        	if perform_pl:
+        		w_space_2 = []
+        		for i in range(len(style)):
+        			std = 0.1 / (K.std(w_space[i], axis=0, keepdims=True)+1e-8)
+        			w_space_2.append(w_space[i]+K.random_normal(tf.shape(w_space[i]))/(std+1e-8))
+
+        		pl_images = self.GAN.G(w_space_2+[noise])
+        		delta_g = K.mean(K.square(pl_images-generated_images), axis=[1, 2, 3])
+        		pl_lengths = delta_g
+        		if self.pl_mean > 0:
+        			gen_loss += K.mean(K.square(pl_lengths-self.pl_mean))
+
+        grad_g = gen_tape.gradient(gen_loss, self.GAN.GM.trainable_variables)
+        grad_d = disc_tape.gradient(disc_loss, self.GAN.D.trainable_variables)
+        self.GAN.GMO.apply_gradients(zip(grad_g, self.GAN.GM.trainable_variables))
+        self.GAN.DMO.apply_gradients(zip(grad_d, self.GAN.D.trainable_variables))
+        return disc_loss, gen_loss, divergence, pl_lengths
+
+    def evaluate(self, num=0, trunc=1.):
+    	n1 = noiseList(64)
+    	n2 = nImage(64)
+    	trunc = np.ones([64, 1]) * trunc
+    	generated_images = self.GAN.GM.predict(n1+[n2], batch_size=batch_size)
+    	r = []
+    	for i in range(0, 64, 8):
+    		r.append(np.concatenate(generated_images[i:i+8], axis=1))
+    	c1 = np.concatenate(r, axis=0)
+    	c1 = np.clip(c1, 0.0, 1.0)
+    	x = Image.fromarray(np.uint8(c1*255))
+    	x.save("Results/i"+str(num)+".png")
+
+    	#moving average
+    	generated_images = self.GAN.GMA.predict(n1+[n2, trunc], batch_size=batch_size)
+    	r = []
+    	for i in range(0, 64, 8):
+    		r.append(np.concatenate(generated_images[i:i+8], axis=1))
+    	c1 = np.concatenate(r, axis = 0)
+        c1 = np.clip(c1, 0.0, 1.0)
+        x = Image.fromarray(np.uint8(c1*255))
+        x.save("Results/i"+str(num)+"-ema.png")
+
+        #mixing regularities
+        n0 = noise(8)
+        n1 = np.tile(n0, (8, 1))
+        n2 = np.repeat(n0, 8, axis=0)
+        tt = int(n_layers/2)
+        p1 = [n1] * tt
+        p2 = [n2] * (n_layers - tt)
+        latent = p1 + [] + p2
+        generated_images = self.GAN.GMA.predict(latent+[nImage(64), trunc], batch_size=batch_size)
+
+        r = []
+        for i in range(0, 64, 8):
+    		r.append(np.concatenate(generated_images[i:i+8], axis=1))
+    	c1 = np.concatenate(r, axis = 1)
+        c1 = np.clip(c1, 0.0, 1.0)
+        x = Image.fromarray(np.uint8(c1*255))
+        x.save("Results/i"+str(num)+"-mr.png")
+
+    def generateTruncated(self, style, noi=np.zeros([44]), trunc=0.5, outImage=False, num=0):
+    	# Get latent W's center of mass
+    	if self.av.shape[0] == 44:
+    		print("Approximating W's CoM")
+    		self.av = np.mean(self.GAN.S.predict(noise(2000), batch_size=64), axis=0)
+    		self.av = np.expand_dims(self.av, axis=0)
+
+    	if noi.shape[0] == 44:
+    		noi = nImage(64)
+    	w_space  = []
+    	pl_lengths = self.pl_mean
+    	for i in range(len(style)):
+    		tempStyle = self.GAN.S.predict(style[i])
+    		tempStyle = trunc * (tempStyle - self.av) + self.av
+    		w_space.append(tempStyle)
+
+    	generated_images = self.GAN.GE.predict(w_space+[noi], batch_size=batch_size)
+    	if outImage:
+    		r = []
+    		for i in range(0, 64, 8):
+    			r.append(np.concatenate(generated_images[i:i+8], axis=0))
+    		c1 = np.concatenate(r, axis = 1)
+        	c1 = np.clip(c1, 0.0, 1.0)
+        	x = Image.fromarray(np.uint8(c1*255))
+        	x.save("Results/i"+str(num)+".png")
+        return generated_images
+
+    def saveModel(self, model, name, num):
+        json = model.to_json()
+        with open("Models/"+name+".json", "w") as json_file:
+            json_file.write(json)
+
+        model.save_weights("Models/"+name+"_"+str(num)+".h5")
+
+    def loadModel(self, name, num):
+    	file = open("Models/"+name+".json", 'r')
+    	json = file.read()
+    	file.close()
+    	model = model_from_json(json, custom_objects={'Conv2DMod':Conv2DMod})
+    	model.load_weights("Models/"+name+"_"+str(num)+".h5")
+    	return model
+
+    def save(self, num):
+    	self.saveModel(self.GAN.S, "sty", num)
+    	self.saveModel(self.GAN.G, "gen", num)
+    	self.saveModel(self.GAN.D, "dis", num)
+    	self.saveModel(self.GAN.GE, "genMA", num)
+    	self.saveModel(self.GAN.SE, "styMA", num)
+
+    def load(self, num):
+    	self.GAN.S = self.loadModel("sty", num)
+    	self.GAN.G = self.loadModel("gen", num)
+    	self.GAN.D = self.loadModel("dis", num)
+    	self.GAN.GE = self.loadModel("genMA", num)
+    	self.GAN.SE = self.loadModel("styMA", num)
+    	self.GAN.GenModel()
+    	self.GAN.GenModel1A()
