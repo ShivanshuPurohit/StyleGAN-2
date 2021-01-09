@@ -363,6 +363,7 @@ class StyleGAN(object):
         return disc_loss, gen_loss, divergence, pl_lengths
 
     def evaluate(self, num=0, trunc=1.):
+        #evaluate
     	n1 = noiseList(64)
     	n2 = nImage(64)
     	trunc = np.ones([64, 1]) * trunc
